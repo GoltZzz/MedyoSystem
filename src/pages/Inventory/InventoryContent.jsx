@@ -34,6 +34,8 @@ import {
 	Warning,
 	CheckCircle,
 } from "@mui/icons-material";
+import { ResponsivePie } from "@nivo/pie";
+import { ResponsiveBar } from "@nivo/bar";
 
 const InventoryContent = () => {
 	const [openDialog, setOpenDialog] = useState(false);
@@ -53,35 +55,111 @@ const InventoryContent = () => {
 	});
 
 	const [inventoryItems, setInventoryItems] = useState([]);
-	const [categories, setCategories] = useState([
-		"All",
-		"Meat",
-		"Pasta",
-		"Bread",
-		"Dairy",
-		"Basic Additives",
-		"Seasoning(Dry)",
-		"Oil",
-		"Dressing",
-		"Spices",
-		"Dried Leaves",
-		"Dips",
-		"Cold Cuts",
-		"Sauces",
-		"Toppings",
-		"Coating/Batter",
-		"Baking",
-		"Takeout Boxes",
-		"Storage",
-		"Cleaning",
-	]);
+	const [categories, setCategories] = useState(["All"]);
 	const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
 	const [editingCategory, setEditingCategory] = useState(null);
 	const [newCategory, setNewCategory] = useState("");
+	const [inventoryStats, setInventoryStats] = useState({
+		inStock: 0,
+		lowStock: 0,
+		outOfStock: 0,
+	});
+	const [chartData, setChartData] = useState({
+		categoryData: [],
+		stockData: [],
+	});
 
+	// Filter and sort the items
+	const filteredItems = inventoryItems
+		.filter((item) => {
+			const matchesSearch = item.name
+				.toLowerCase()
+				.includes(searchQuery.toLowerCase());
+			const matchesCategory =
+				selectedCategory === "All" || item.category === selectedCategory;
+			return matchesSearch && matchesCategory;
+		})
+		.sort((a, b) => {
+			const multiplier = sortOrder === "asc" ? 1 : -1;
+			if (sortBy === "name") {
+				return multiplier * a.name.localeCompare(b.name);
+			} else if (sortBy === "quantity") {
+				return multiplier * (a.quantity - b.quantity);
+			} else if (sortBy === "price") {
+				return multiplier * (a.price - b.price);
+			}
+			return 0;
+		});
+
+	// Calculate inventory statistics
+	const calculateInventoryStats = (items) => {
+		const stats = items.reduce(
+			(acc, item) => {
+				if (item.quantity === 0) {
+					acc.outOfStock++;
+				} else if (item.quantity <= 10) {
+					acc.lowStock++;
+				} else {
+					acc.inStock++;
+				}
+				return acc;
+			},
+			{
+				inStock: 0,
+				lowStock: 0,
+				outOfStock: 0,
+			}
+		);
+		setInventoryStats(stats);
+	};
+
+	// Calculate chart data
+	const calculateChartData = (items) => {
+		// Category distribution data
+		const categoryCount = items.reduce((acc, item) => {
+			if (item.category) {
+				acc[item.category] = (acc[item.category] || 0) + 1;
+			}
+			return acc;
+		}, {});
+
+		const categoryData = Object.entries(categoryCount).map(
+			([category, value]) => ({
+				id: category,
+				label: category,
+				value: value,
+			})
+		);
+
+		// Stock level data
+		const stockData = [
+			{
+				status: "In Stock",
+				count: inventoryStats.inStock,
+			},
+			{
+				status: "Low Stock",
+				count: inventoryStats.lowStock,
+			},
+			{
+				status: "Out of Stock",
+				count: inventoryStats.outOfStock,
+			},
+		];
+
+		setChartData({ categoryData, stockData });
+	};
+
+	// Fetch initial data
 	useEffect(() => {
-		const fetchInventoryItems = async () => {
+		const fetchData = async () => {
 			try {
+				const token = localStorage.getItem("token");
+				if (!token) {
+					console.error("No authentication token found");
+					return;
+				}
+
 				const response = await api.getInventory();
 				setInventoryItems(response.data);
 			} catch (error) {
@@ -89,8 +167,30 @@ const InventoryContent = () => {
 			}
 		};
 
-		fetchInventoryItems();
+		const fetchCategories = async () => {
+			try {
+				const token = localStorage.getItem("token");
+				if (!token) {
+					console.error("No authentication token found");
+					return;
+				}
+
+				const response = await api.get("/inventory/categories");
+				setCategories(["All", ...response.data.map((cat) => cat.name)]);
+			} catch (error) {
+				console.error("Error fetching categories:", error);
+			}
+		};
+
+		fetchData();
+		fetchCategories();
 	}, []);
+
+	// Update calculations when filtered items change
+	useEffect(() => {
+		calculateInventoryStats(filteredItems);
+		calculateChartData(filteredItems);
+	}, [filteredItems, inventoryStats]);
 
 	const getStatusColor = (status) => {
 		switch (status) {
@@ -213,63 +313,47 @@ const InventoryContent = () => {
 		setNewCategory("");
 	};
 
-	const handleAddCategory = () => {
-		if (newCategory && !categories.includes(newCategory)) {
-			setCategories((prev) => [...prev, newCategory]);
-			handleCloseCategoryDialog();
+	const handleAddCategory = async () => {
+		if (!newCategory.trim()) return;
+
+		try {
+			await api.post("/inventory/categories", { name: newCategory });
+			const response = await api.get("/inventory/categories");
+			setCategories(["All", ...response.data.map((cat) => cat.name)]);
+			setNewCategory("");
+			setCategoryDialogOpen(false);
+		} catch (error) {
+			console.error("Error adding category:", error);
 		}
 	};
 
-	const handleEditCategory = () => {
-		if (newCategory && !categories.includes(newCategory)) {
-			setCategories((prev) =>
-				prev.map((cat) => (cat === editingCategory ? newCategory : cat))
-			);
-			// Update all items with the old category to use the new category name
-			setInventoryItems((prev) =>
-				prev.map((item) => ({
-					...item,
-					category: item.category === editingCategory ? newCategory : item.category,
-				}))
-			);
-			handleCloseCategoryDialog();
+	const handleEditCategory = async () => {
+		if (!newCategory.trim() || !editingCategory) return;
+
+		try {
+			await api.put("/inventory/categories", {
+				oldName: editingCategory,
+				newName: newCategory,
+			});
+			const response = await api.get("/inventory/categories");
+			setCategories(["All", ...response.data.map((cat) => cat.name)]);
+			setNewCategory("");
+			setEditingCategory(null);
+			setCategoryDialogOpen(false);
+		} catch (error) {
+			console.error("Error updating category:", error);
 		}
 	};
 
-	const handleDeleteCategory = (categoryToDelete) => {
-		if (categoryToDelete !== "All") {
-			setCategories((prev) => prev.filter((cat) => cat !== categoryToDelete));
-			// Update all items with the deleted category to use "Uncategorized"
-			setInventoryItems((prev) =>
-				prev.map((item) => ({
-					...item,
-					category: item.category === categoryToDelete ? "Uncategorized" : item.category,
-				}))
-			);
+	const handleDeleteCategory = async (categoryName) => {
+		try {
+			await api.delete(`/inventory/categories/${categoryName}`);
+			const response = await api.get("/inventory/categories");
+			setCategories(["All", ...response.data.map((cat) => cat.name)]);
+		} catch (error) {
+			console.error("Error deleting category:", error);
 		}
 	};
-
-	// Filter and sort the items
-	const filteredItems = inventoryItems
-		.filter((item) => {
-			const matchesSearch = item.name
-				.toLowerCase()
-				.includes(searchQuery.toLowerCase());
-			const matchesCategory =
-				selectedCategory === "All" || item.category === selectedCategory;
-			return matchesSearch && matchesCategory;
-		})
-		.sort((a, b) => {
-			const multiplier = sortOrder === "asc" ? 1 : -1;
-			if (sortBy === "name") {
-				return multiplier * a.name.localeCompare(b.name);
-			} else if (sortBy === "quantity") {
-				return multiplier * (a.quantity - b.quantity);
-			} else if (sortBy === "price") {
-				return multiplier * (a.price - b.price);
-			}
-			return 0;
-		});
 
 	// Paginate the items
 	const paginatedItems = filteredItems.slice(
@@ -285,96 +369,92 @@ const InventoryContent = () => {
 				Inventory Management
 			</Typography>
 
+			{/* Charts Section */}
 			<Grid container spacing={3} sx={{ mb: 4 }}>
-				{/* Summary Cards */}
-				<Grid item xs={12} sm={6} md={4}>
+				<Grid item xs={12} md={6}>
 					<Paper
 						elevation={3}
 						sx={{
 							p: 3,
-							height: "100%",
+							height: 400,
 							bgcolor: "rgba(255, 255, 255, 0.9)",
 							backdropFilter: "blur(10px)",
 							boxShadow: "0 4px 15px rgba(0, 0, 0, 0.1)",
-							transition: "transform 0.2s ease-in-out",
-							"&:hover": {
-								transform: "translateY(-4px)",
-							},
 						}}>
-						<Typography
-							variant="h6"
-							sx={{
-								color: "success.main",
-								mb: 2,
-								display: "flex",
-								alignItems: "center",
-							}}>
-							<CheckCircle sx={{ mr: 1 }} />
-							In Stock Items
+						<Typography variant="h6" sx={{ mb: 2 }}>
+							Category Distribution
 						</Typography>
-						<Typography variant="h4" sx={{ fontWeight: "medium" }}>
-							42
-						</Typography>
+						<Box sx={{ height: 300 }}>
+							<ResponsivePie
+								data={chartData.categoryData}
+								margin={{ top: 20, right: 80, bottom: 20, left: 80 }}
+								innerRadius={0.5}
+								padAngle={0.7}
+								cornerRadius={3}
+								activeOuterRadiusOffset={8}
+								colors={{ scheme: "nivo" }}
+								borderWidth={1}
+								borderColor={{ from: "color", modifiers: [["darker", 0.2]] }}
+								arcLinkLabelsSkipAngle={10}
+								arcLinkLabelsTextColor="#333333"
+								arcLinkLabelsThickness={2}
+								arcLinkLabelsColor={{ from: "color" }}
+								arcLabelsSkipAngle={10}
+								arcLabelsTextColor={{
+									from: "color",
+									modifiers: [["darker", 2]],
+								}}
+							/>
+						</Box>
 					</Paper>
 				</Grid>
-				<Grid item xs={12} sm={6} md={4}>
+				<Grid item xs={12} md={6}>
 					<Paper
 						elevation={3}
 						sx={{
 							p: 3,
-							height: "100%",
+							height: 400,
 							bgcolor: "rgba(255, 255, 255, 0.9)",
 							backdropFilter: "blur(10px)",
 							boxShadow: "0 4px 15px rgba(0, 0, 0, 0.1)",
-							transition: "transform 0.2s ease-in-out",
-							"&:hover": {
-								transform: "translateY(-4px)",
-							},
 						}}>
-						<Typography
-							variant="h6"
-							sx={{
-								color: "warning.main",
-								mb: 2,
-								display: "flex",
-								alignItems: "center",
-							}}>
-							<Warning sx={{ mr: 1 }} />
-							Low Stock Items
+						<Typography variant="h6" sx={{ mb: 2 }}>
+							Stock Level Distribution
 						</Typography>
-						<Typography variant="h4" sx={{ fontWeight: "medium" }}>
-							13
-						</Typography>
-					</Paper>
-				</Grid>
-				<Grid item xs={12} sm={6} md={4}>
-					<Paper
-						elevation={3}
-						sx={{
-							p: 3,
-							height: "100%",
-							bgcolor: "rgba(255, 255, 255, 0.9)",
-							backdropFilter: "blur(10px)",
-							boxShadow: "0 4px 15px rgba(0, 0, 0, 0.1)",
-							transition: "transform 0.2s ease-in-out",
-							"&:hover": {
-								transform: "translateY(-4px)",
-							},
-						}}>
-						<Typography
-							variant="h6"
-							sx={{
-								color: "error.main",
-								mb: 2,
-								display: "flex",
-								alignItems: "center",
-							}}>
-							<Delete sx={{ mr: 1 }} />
-							Out of Stock Items
-						</Typography>
-						<Typography variant="h4" sx={{ fontWeight: "medium" }}>
-							5
-						</Typography>
+						<Box sx={{ height: 300 }}>
+							<ResponsiveBar
+								data={chartData.stockData}
+								keys={["count"]}
+								indexBy="status"
+								margin={{ top: 20, right: 30, bottom: 50, left: 60 }}
+								padding={0.3}
+								valueScale={{ type: "linear" }}
+								indexScale={{ type: "band", round: true }}
+								colors={{ scheme: "nivo" }}
+								borderColor={{ from: "color", modifiers: [["darker", 1.6]] }}
+								axisTop={null}
+								axisRight={null}
+								axisBottom={{
+									tickSize: 5,
+									tickPadding: 5,
+									tickRotation: 0,
+								}}
+								axisLeft={{
+									tickSize: 5,
+									tickPadding: 5,
+									tickRotation: 0,
+								}}
+								labelSkipWidth={12}
+								labelSkipHeight={12}
+								labelTextColor={{
+									from: "color",
+									modifiers: [["darker", 1.6]],
+								}}
+								animate={true}
+								motionStiffness={90}
+								motionDamping={15}
+							/>
+						</Box>
 					</Paper>
 				</Grid>
 			</Grid>
@@ -554,8 +634,8 @@ const InventoryContent = () => {
 			</Grid>
 
 			{/* Add/Edit Dialog */}
-			<Dialog 
-				open={openDialog} 
+			<Dialog
+				open={openDialog}
 				onClose={handleCloseDialog}
 				maxWidth="sm"
 				fullWidth
@@ -564,19 +644,19 @@ const InventoryContent = () => {
 						borderRadius: 2,
 						bgcolor: "background.paper",
 						boxShadow: "0 8px 32px rgba(0, 0, 0, 0.08)",
-					}
-				}}
-			>
-				<DialogTitle sx={{ 
-					pb: 1,
-					borderBottom: "1px solid",
-					borderColor: "divider",
-					"& .MuiTypography-root": {
-						fontSize: "1.5rem",
-						fontWeight: 600,
-						color: "#FF5722"
-					}
+					},
 				}}>
+				<DialogTitle
+					sx={{
+						pb: 1,
+						borderBottom: "1px solid",
+						borderColor: "divider",
+						"& .MuiTypography-root": {
+							fontSize: "1.5rem",
+							fontWeight: 600,
+							color: "#FF5722",
+						},
+					}}>
 					{editItem ? "Edit Inventory Item" : "Add New Item"}
 				</DialogTitle>
 				<DialogContent sx={{ pt: 3 }}>
@@ -591,14 +671,16 @@ const InventoryContent = () => {
 								variant="outlined"
 								required
 								autoFocus
-								sx={{ "& .MuiOutlinedInput-root": {
-									"&:hover fieldset": {
-										borderColor: "#FF5722",
+								sx={{
+									"& .MuiOutlinedInput-root": {
+										"&:hover fieldset": {
+											borderColor: "#FF5722",
+										},
+										"&.Mui-focused fieldset": {
+											borderColor: "#FF5722",
+										},
 									},
-									"&.Mui-focused fieldset": {
-										borderColor: "#FF5722",
-									}
-								}}}
+								}}
 							/>
 						</Grid>
 						<Grid item xs={12}>
@@ -612,14 +694,16 @@ const InventoryContent = () => {
 								multiline
 								rows={3}
 								required
-								sx={{ "& .MuiOutlinedInput-root": {
-									"&:hover fieldset": {
-										borderColor: "#FF5722",
+								sx={{
+									"& .MuiOutlinedInput-root": {
+										"&:hover fieldset": {
+											borderColor: "#FF5722",
+										},
+										"&.Mui-focused fieldset": {
+											borderColor: "#FF5722",
+										},
 									},
-									"&.Mui-focused fieldset": {
-										borderColor: "#FF5722",
-									}
-								}}}
+								}}
 							/>
 						</Grid>
 						<Grid item xs={12} sm={6}>
@@ -639,14 +723,16 @@ const InventoryContent = () => {
 										</InputAdornment>
 									),
 								}}
-								sx={{ "& .MuiOutlinedInput-root": {
-									"&:hover fieldset": {
-										borderColor: "#FF5722",
+								sx={{
+									"& .MuiOutlinedInput-root": {
+										"&:hover fieldset": {
+											borderColor: "#FF5722",
+										},
+										"&.Mui-focused fieldset": {
+											borderColor: "#FF5722",
+										},
 									},
-									"&.Mui-focused fieldset": {
-										borderColor: "#FF5722",
-									}
-								}}}
+								}}
 							/>
 						</Grid>
 						<Grid item xs={12} sm={6}>
@@ -664,36 +750,38 @@ const InventoryContent = () => {
 										<InputAdornment position="start">₱</InputAdornment>
 									),
 								}}
-								sx={{ "& .MuiOutlinedInput-root": {
-									"&:hover fieldset": {
-										borderColor: "#FF5722",
+								sx={{
+									"& .MuiOutlinedInput-root": {
+										"&:hover fieldset": {
+											borderColor: "#FF5722",
+										},
+										"&.Mui-focused fieldset": {
+											borderColor: "#FF5722",
+										},
 									},
-									"&.Mui-focused fieldset": {
-										borderColor: "#FF5722",
-									}
-								}}}
+								}}
 							/>
 						</Grid>
 						<Grid item xs={12}>
-							<FormControl 
-								fullWidth 
+							<FormControl
+								fullWidth
 								required
-								sx={{ "& .MuiOutlinedInput-root": {
-									"&:hover fieldset": {
-										borderColor: "#FF5722",
+								sx={{
+									"& .MuiOutlinedInput-root": {
+										"&:hover fieldset": {
+											borderColor: "#FF5722",
+										},
+										"&.Mui-focused fieldset": {
+											borderColor: "#FF5722",
+										},
 									},
-									"&.Mui-focused fieldset": {
-										borderColor: "#FF5722",
-									}
-								}}}
-							>
+								}}>
 								<InputLabel>Category</InputLabel>
 								<Select
 									name="category"
 									value={formData.category}
 									onChange={handleInputChange}
-									label="Category"
-								>
+									label="Category">
 									{categories
 										.filter((category) => category !== "All")
 										.map((category) => (
@@ -706,14 +794,15 @@ const InventoryContent = () => {
 						</Grid>
 					</Grid>
 				</DialogContent>
-				<DialogActions sx={{ 
-					px: 3, 
-					py: 2,
-					borderTop: "1px solid",
-					borderColor: "divider",
-					gap: 1
-				}}>
-					<Button 
+				<DialogActions
+					sx={{
+						px: 3,
+						py: 2,
+						borderTop: "1px solid",
+						borderColor: "divider",
+						gap: 1,
+					}}>
+					<Button
 						onClick={handleCloseDialog}
 						variant="outlined"
 						sx={{
@@ -723,8 +812,7 @@ const InventoryContent = () => {
 								borderColor: "#F4511E",
 								bgcolor: "rgba(255, 87, 34, 0.04)",
 							},
-						}}
-					>
+						}}>
 						Cancel
 					</Button>
 					<Button
@@ -743,8 +831,7 @@ const InventoryContent = () => {
 								bgcolor: "rgba(255, 87, 34, 0.12)",
 								color: "rgba(255, 87, 34, 0.26)",
 							},
-						}}
-					>
+						}}>
 						{editItem ? "Save Changes" : "Add Item"}
 					</Button>
 				</DialogActions>

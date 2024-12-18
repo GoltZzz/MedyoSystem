@@ -6,8 +6,8 @@ const Footer = () => {
 		<Box
 			component="footer"
 			sx={{
-				py: 3,
-				px: 2,
+				py: 3, // Adjusted vertical padding
+				px: 2, // Adjusted horizontal padding
 				mt: "auto",
 				background:
 					"linear-gradient(-45deg, #FF5722, #FF7043, #FF8A65, #FFAB91)",
